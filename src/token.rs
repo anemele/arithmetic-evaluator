@@ -11,8 +11,8 @@ use rust_decimal::Error as DecimalError;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Token {
-    Plus,
-    Minus,
+    Add,
+    Sub,
     Mul,
     Div,
     LP,
@@ -29,7 +29,7 @@ pub enum Precedence {
 
 pub fn precedence(op: &Token) -> Precedence {
     match op {
-        Token::Plus | Token::Minus => Precedence::PM,
+        Token::Add | Token::Sub => Precedence::PM,
         Token::Mul | Token::Div => Precedence::MD,
         _ => Precedence::N,
     }
@@ -73,8 +73,8 @@ fn tokenize_char(input: &str) -> IResult<&str, Token> {
         |c| -> Token {
             use Token::*;
             match c {
-                '+' => Plus,
-                '-' => Minus,
+                '+' => Add,
+                '-' => Sub,
                 '*' => Mul,
                 '/' => Div,
                 '(' => LP,
@@ -142,10 +142,10 @@ mod tests {
             tokenize(" 2+  5 - - 4/4 *").unwrap(),
             vec![
                 number("2"),
-                Plus,
+                Add,
                 number("5"),
-                Minus,
-                Minus,
+                Sub,
+                Sub,
                 number("4"),
                 Div,
                 number("4"),
@@ -173,7 +173,7 @@ mod tests {
             tokenize("1+1.1*2/3()1.1.1-.1.1").unwrap(),
             vec![
                 number("1"),
-                Plus,
+                Add,
                 number("1.1"),
                 Mul,
                 number("2"),
@@ -183,7 +183,7 @@ mod tests {
                 RP,
                 number("1.1"),
                 number("0.1"),
-                Minus,
+                Sub,
                 number("0.1"),
                 number("0.1"),
             ]

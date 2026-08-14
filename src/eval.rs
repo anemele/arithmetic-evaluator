@@ -7,9 +7,9 @@ pub enum SyntaxError {
     EmptyExpr,
 
     #[error("unmatched left parentheses")]
-    UnmatchedLeftParen,
+    UnmatchedLP,
     #[error("unmatched right parentheses")]
-    UnmatchedRightParen,
+    UnmatchedRP,
     #[error("empty parentheses")]
     EmptyParen,
 
@@ -37,7 +37,7 @@ pub enum SyntaxError {
     RPWithLP,
 }
 
-fn check_syntax(ts: &Tokens) -> Result<(), SyntaxError> {
+fn normalize(ts: &Tokens) -> Result<Tokens, SyntaxError> {
     enum LastKind {
         Start, // Minus, Num, LP
         Op,    // Num, LP
@@ -46,6 +46,7 @@ fn check_syntax(ts: &Tokens) -> Result<(), SyntaxError> {
         RP,    // Op, RP
     }
     let mut last_kind = LastKind::Start;
+    let mut ret = Vec::<Token>::new();
 
     use Token::*;
 
@@ -55,40 +56,48 @@ fn check_syntax(ts: &Tokens) -> Result<(), SyntaxError> {
                 Number(_) => return Err(SyntaxError::ConsecutiveNumber),
                 LP => return Err(SyntaxError::NumberLP),
                 RP => last_kind = LastKind::RP,
-                Plus | Minus | Mul | Div => last_kind = LastKind::Op,
+                Add | Sub | Mul | Div => last_kind = LastKind::Op,
             },
             LastKind::Op => match t {
                 Number(_) => last_kind = LastKind::Num,
                 LP => last_kind = LastKind::LP,
                 RP => return Err(SyntaxError::OperatorRP),
-                Plus | Minus | Mul | Div => return Err(SyntaxError::ConsecutiveOperator),
+                Add | Sub | Mul | Div => return Err(SyntaxError::ConsecutiveOperator),
             },
             LastKind::LP => match t {
                 Number(_) => last_kind = LastKind::Num,
                 LP => last_kind = LastKind::LP,
                 RP => return Err(SyntaxError::EmptyParen),
-                Plus | Minus | Mul | Div => return Err(SyntaxError::LPOperator),
+                Sub => {
+                    last_kind = LastKind::Op;
+                    ret.push(Number(Decimal::ZERO));
+                }
+                Add | Mul | Div => return Err(SyntaxError::LPOperator),
             },
             LastKind::RP => match t {
                 Number(_) => return Err(SyntaxError::RPNumber),
                 LP => return Err(SyntaxError::RPWithLP),
                 RP => last_kind = LastKind::RP,
-                Plus | Minus | Mul | Div => last_kind = LastKind::Op,
+                Add | Sub | Mul | Div => last_kind = LastKind::Op,
             },
             LastKind::Start => match t {
                 Number(_) => last_kind = LastKind::Num,
                 LP => last_kind = LastKind::LP,
-                RP => return Err(SyntaxError::UnmatchedRightParen),
-                Minus => last_kind = LastKind::Op,
-                Plus | Mul | Div => return Err(SyntaxError::StartWithOperator),
+                RP => return Err(SyntaxError::UnmatchedRP),
+                Sub => {
+                    last_kind = LastKind::Op;
+                    ret.push(Number(Decimal::ZERO));
+                }
+                Add | Mul | Div => return Err(SyntaxError::StartWithOperator),
             },
         }
+        ret.push(*t);
     }
 
     match last_kind {
-        LastKind::Num | LastKind::RP => Ok(()),
+        LastKind::Num | LastKind::RP => Ok(ret),
         LastKind::Op => Err(SyntaxError::EndWithOperator),
-        LastKind::LP => Err(SyntaxError::UnmatchedLeftParen),
+        LastKind::LP => Err(SyntaxError::UnmatchedLP),
         LastKind::Start => Err(SyntaxError::EmptyExpr),
     }
 }
@@ -97,11 +106,6 @@ fn infix_to_postfix(ts: &Tokens) -> Result<Tokens, SyntaxError> {
     use Token::*;
 
     let mut ret = Vec::<Token>::new();
-    if let Some(t) = ts.first()
-        && matches!(t, Minus)
-    {
-        ret.push(Number(Decimal::ZERO));
-    }
     let mut op_stack = Vec::<Token>::new();
 
     for token in ts {
@@ -109,13 +113,13 @@ fn infix_to_postfix(ts: &Tokens) -> Result<Tokens, SyntaxError> {
             Number(_) => ret.push(*token),
             LP => op_stack.push(*token),
             RP => loop {
-                let top = op_stack.pop().ok_or(SyntaxError::UnmatchedRightParen)?;
+                let top = op_stack.pop().ok_or(SyntaxError::UnmatchedRP)?;
                 if matches!(top, LP) {
                     break;
                 }
                 ret.push(top);
             },
-            op @ (Plus | Minus | Mul | Div) => {
+            op @ (Add | Sub | Mul | Div) => {
                 while let Some(top) = op_stack.last() {
                     if matches!(top, LP) || precedence(top) < precedence(op) {
                         break;
@@ -129,7 +133,7 @@ fn infix_to_postfix(ts: &Tokens) -> Result<Tokens, SyntaxError> {
 
     while let Some(top) = op_stack.pop() {
         if matches!(top, LP) {
-            return Err(SyntaxError::UnmatchedLeftParen);
+            return Err(SyntaxError::UnmatchedLP);
         }
         ret.push(top);
     }
@@ -138,7 +142,9 @@ fn infix_to_postfix(ts: &Tokens) -> Result<Tokens, SyntaxError> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum CalcError {
+pub enum EvalError {
+    #[error("overflow")]
+    Overflow,
     #[error("divided by zero")]
     DivByZero,
     #[error("bad rpn")]
@@ -146,22 +152,18 @@ pub enum CalcError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum EvalError {
+pub enum CalcError {
     #[error("token error: {0}")]
     Token(#[from] TokenError),
     #[error("syntax error: {0}")]
     Syntax(#[from] SyntaxError),
     #[error("calc error: {0}")]
-    Calc(#[from] CalcError),
+    Eval(#[from] EvalError),
 }
 
-pub fn eval_expr(input: &str) -> Result<Decimal, EvalError> {
-    let ts = match tokenize(input) {
-        Ok(ts) => ts,
-        Err(e) => return Err(EvalError::Token(e)),
-    };
-
-    check_syntax(&ts)?;
+pub fn eval_expr(input: &str) -> Result<Decimal, CalcError> {
+    let ts = tokenize(input)?;
+    let ts = normalize(&ts)?;
     let ts = infix_to_postfix(&ts)?;
 
     use Token::*;
@@ -170,35 +172,47 @@ pub fn eval_expr(input: &str) -> Result<Decimal, EvalError> {
     for token in ts {
         match token {
             Number(num) => stack.push(num),
-            Plus => {
-                let rhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                let lhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                stack.push(lhs + rhs);
+            Add => {
+                let rhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let lhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let res = lhs
+                    .checked_add(rhs)
+                    .ok_or(CalcError::Eval(EvalError::Overflow))?;
+                stack.push(res);
             }
-            Minus => {
-                let rhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                let lhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                stack.push(lhs - rhs);
+            Sub => {
+                let rhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let lhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let res = lhs
+                    .checked_sub(rhs)
+                    .ok_or(CalcError::Eval(EvalError::Overflow))?;
+                stack.push(res);
             }
             Mul => {
-                let rhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                let lhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                stack.push(lhs * rhs);
+                let rhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let lhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let res = lhs
+                    .checked_mul(rhs)
+                    .ok_or(CalcError::Eval(EvalError::Overflow))?;
+                stack.push(res);
             }
             Div => {
-                let rhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
-                let lhs = stack.pop().ok_or(EvalError::Calc(CalcError::BadRpn))?;
+                let rhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
+                let lhs = stack.pop().ok_or(CalcError::Eval(EvalError::BadRpn))?;
                 if rhs == Decimal::ZERO {
-                    return Err(EvalError::Calc(CalcError::DivByZero));
+                    return Err(CalcError::Eval(EvalError::DivByZero));
                 }
-                stack.push(lhs / rhs);
+                let res = lhs
+                    .checked_div(rhs)
+                    .ok_or(CalcError::Eval(EvalError::Overflow))?;
+                stack.push(res);
             }
             LP | RP => unreachable!(),
         }
     }
 
     if stack.len() != 1 {
-        return Err(EvalError::Calc(CalcError::BadRpn));
+        return Err(CalcError::Eval(EvalError::BadRpn));
     }
 
     Ok(stack[0])
@@ -221,34 +235,39 @@ mod tests {
 
     #[test]
     fn test_infix_to_postfix() {
-        assert!(infix_to_postfix(&tokenize("((1+3)*5").unwrap()).is_err());
+        #[inline]
+        fn norm(s: &str) -> Result<Tokens, SyntaxError> {
+            infix_to_postfix(&normalize(&tokenize(s).unwrap()).unwrap())
+        }
+
+        assert_matches!(norm("((1+3)*5"), Err(SyntaxError::UnmatchedLP));
 
         assert_eq!(
-            infix_to_postfix(&tokenize("1+2").unwrap()).unwrap(),
-            vec![token_number("1"), token_number("2"), Plus]
+            norm("1+2").unwrap(),
+            vec![token_number("1"), token_number("2"), Add]
         );
         assert_eq!(
-            infix_to_postfix(&tokenize("-1+2").unwrap()).unwrap(),
+            norm("-1+2").unwrap(),
             vec![
                 token_number("0"),
                 token_number("1"),
-                Minus,
+                Sub,
                 token_number("2"),
-                Plus
+                Add
             ]
         );
         assert_eq!(
-            infix_to_postfix(&tokenize("1+2*3-4/5").unwrap()).unwrap(),
+            norm("1+2*3-4/5").unwrap(),
             vec![
                 token_number("1"),
                 token_number("2"),
                 token_number("3"),
                 Mul,
-                Plus,
+                Add,
                 token_number("4"),
                 token_number("5"),
                 Div,
-                Minus,
+                Sub,
             ]
         );
     }
@@ -257,10 +276,10 @@ mod tests {
     fn test_eval_expr() {
         assert_matches!(
             eval_expr(""),
-            Err(EvalError::Syntax(SyntaxError::EmptyExpr))
+            Err(CalcError::Syntax(SyntaxError::EmptyExpr))
         );
 
-        assert_matches!(eval_expr("1/0"), Err(EvalError::Calc(CalcError::DivByZero)));
+        assert_matches!(eval_expr("1/0"), Err(CalcError::Eval(EvalError::DivByZero)));
 
         assert_eq!(eval_expr("1+1").unwrap(), number("2"));
 
@@ -269,7 +288,7 @@ mod tests {
         assert_eq!(eval_expr("(1+2)*(3)-4/5").unwrap(), number("8.2"));
         assert_matches!(
             eval_expr("(1+2)*()3-4/5"),
-            Err(EvalError::Syntax(SyntaxError::EmptyParen))
+            Err(CalcError::Syntax(SyntaxError::EmptyParen))
         );
 
         assert_eq!(eval_expr("(1+2)*(3-4)/5").unwrap(), number("-0.6"));
