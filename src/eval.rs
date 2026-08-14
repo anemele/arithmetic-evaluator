@@ -157,7 +157,7 @@ pub enum CalcError {
     Token(#[from] TokenError),
     #[error("syntax error: {0}")]
     Syntax(#[from] SyntaxError),
-    #[error("calc error: {0}")]
+    #[error("eval error: {0}")]
     Eval(#[from] EvalError),
 }
 
@@ -236,28 +236,36 @@ mod tests {
     #[test]
     fn test_infix_to_postfix() {
         #[inline]
-        fn norm(s: &str) -> Result<Tokens, SyntaxError> {
-            infix_to_postfix(&normalize(&tokenize(s).unwrap()).unwrap())
+        fn f(s: &str) -> Result<Tokens, SyntaxError> {
+            infix_to_postfix(&tokenize(s).unwrap())
         }
 
-        assert_matches!(norm("((1+3)*5"), Err(SyntaxError::UnmatchedLP));
+        assert_matches!(f("((1+3)*5"), Err(SyntaxError::UnmatchedLP));
 
         assert_eq!(
-            norm("1+2").unwrap(),
+            f("1+2").unwrap(),
             vec![token_number("1"), token_number("2"), Add]
         );
         assert_eq!(
-            norm("-1+2").unwrap(),
+            f("-1+2").unwrap(),
+            vec![token_number("1"), Sub, token_number("2"), Add]
+        );
+        assert_eq!(
+            f("++--1 * 2/3").unwrap(),
             vec![
-                token_number("0"),
-                token_number("1"),
+                Add,
+                Add,
                 Sub,
+                token_number("1"),
                 token_number("2"),
-                Add
+                Mul,
+                token_number("3"),
+                Div,
+                Sub
             ]
         );
         assert_eq!(
-            norm("1+2*3-4/5").unwrap(),
+            f("1+2*3-4/5").unwrap(),
             vec![
                 token_number("1"),
                 token_number("2"),

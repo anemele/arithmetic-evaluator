@@ -2,14 +2,6 @@ use std::io::{self, BufRead, Write, stdout};
 
 use arithmetic_evaluator::eval_expr;
 
-#[inline]
-fn calc(expr: &str) {
-    match eval_expr(expr) {
-        Ok(res) => println!("{res}"),
-        Err(e) => eprintln!("{e}"),
-    }
-}
-
 fn main() {
     println!("arithmetic_evaluator");
     let stdin = io::stdin();
@@ -27,6 +19,9 @@ fn main() {
         if s.is_empty() {
             continue;
         }
-        calc(s);
+        match eval_expr(s) {
+            Ok(res) => println!("{res}"),
+            Err(e) => eprintln!("{e}"),
+        }
     }
 }
